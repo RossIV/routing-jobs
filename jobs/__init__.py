@@ -2,7 +2,7 @@
 
 from nautobot.core.celery import register_jobs
 
-from .management_interface import CreateManagementInterface, ConfigureExistingInterfaceForManagement
+from .management_interfaces import CreateManagementInterface, ConfigureExistingInterfaceForManagement
 
 jobs = [
     CreateManagementInterface,
