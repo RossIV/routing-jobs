@@ -1,0 +1,4 @@
+MANAGEMENT_DNS_DOMAIN = "25.scconf.org"
+PLANNED_STATUS = "Planned"
+CONNECTED_STATUS = "Connected"
+ACTIVE_STATUS = "Active"
