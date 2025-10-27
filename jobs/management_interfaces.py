@@ -43,7 +43,7 @@ class CreateManagementInterface(Job):
         display_field="name",
         query_params={
             "status": "Active",
-            "tenant": "SCinet"
+            "tenant_group": "SCinet"
         },
     )
 
@@ -255,7 +255,7 @@ class ConfigureExistingInterfaceForManagement(Job):
         display_field="name",
         query_params={
             "status": "Active",
-            "tenant": "SCinet"
+            "tenant_group": "SCinet"
         },
     )
 
