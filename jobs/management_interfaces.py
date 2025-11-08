@@ -9,8 +9,8 @@ from nautobot.extras.models import Status, Role
 from nautobot.tenancy.models import Tenant
 from nautobot.apps.jobs import Job, ObjectVar, StringVar, ChoiceVar, BooleanVar
 
-from utils import hl
-import constants
+from .utils import hl
+from . import constants
 
 name = "SC25 Routing Jobs"  # Grouping shown in the UI
 
@@ -43,7 +43,7 @@ class CreateManagementInterface(Job):
         display_field="name",
         query_params={
             "status": "Active",
-            "tenant__tenant_group__name": "SCinet"
+            "tenant_group": "SCinet"
         },
     )
 
@@ -147,19 +147,21 @@ class CreateManagementInterface(Job):
             dns_name = f"{device.name}.{constants.MANAGEMENT_DNS_DOMAIN}"
 
         # Update IP address with management settings
-        ip_address.status = self.active_status
-        ip_address.description = f"Management IP for {device.name}"
-        ip_address.dns_name = dns_name
-        ip_address.save()
+        address = IPAddress(
+            address= ip_address.format(),
+            status=self.active_status,
+            description=f"Management IP for {device.name}",
+            dns_name=dns_name,
+        )
+        address.save()
 
-        self.logger.info(f"✅ Configured IP address: {hl(ip_address)}")
+        self.logger.info(f"✅ Configured IP address: {hl(address)}")
 
         # Assign to interface if not already assigned
-        if not interface.ip_addresses.filter(pk=ip_address.pk).exists():
-            interface.ip_addresses.add(ip_address)
-            self.logger.info(f"➕ Assigned IP {hl(ip_address)} to interface {hl(interface)}")
+        interface.ip_addresses.add(address)
+        self.logger.info(f"➕ Assigned IP {hl(ip_address)} to interface {hl(interface)}")
 
-        return ip_address
+        return address
 
     def _set_primary_ips(self, device, ipv4_address, ipv6_address):
         """Set primary IPv4 and IPv6 addresses on the device."""
@@ -192,7 +194,7 @@ class CreateManagementInterface(Job):
         for prefix in prefixes:
             try:
                 # Use Nautobot's native IPAM to get next available IP
-                next_ip_address = prefix.available_ips.create()
+                next_ip_address = prefix.get_first_available_ip()
                 ip_address = self._configure_ip_address(next_ip_address, interface, device, prefix_dns_name)
 
                 if prefix.ip_version == 4:
@@ -253,7 +255,7 @@ class ConfigureExistingInterfaceForManagement(Job):
         display_field="name",
         query_params={
             "status": "Active",
-            "tenant__tenant_group__name": "SCinet"
+            "tenant_group": "SCinet"
         },
     )
 
@@ -344,19 +346,18 @@ class ConfigureExistingInterfaceForManagement(Job):
             dns_name = f"{device.name}.{constants.MANAGEMENT_DNS_DOMAIN}"
 
         # Update IP address with management settings
-        ip_address.status = self.active_status
-        ip_address.description = f"Management IP for {device.name}"
-        ip_address.dns_name = dns_name
-        ip_address.save()
-
+        address = IPAddress(
+            address= ip_address.format(),
+            status=self.active_status,
+            description=f"Management IP for {device.name}",
+            dns_name=dns_name,
+        )
+        address.save()
         self.logger.info(f"✅ Configured IP address: {hl(ip_address)}")
+        interface.ip_addresses.add(address)
+        self.logger.info(f"➕ Assigned IP {hl(ip_address)} to interface {hl(interface)}")
 
-        # Assign to interface if not already assigned
-        if not interface.ip_addresses.filter(pk=ip_address.pk).exists():
-            interface.ip_addresses.add(ip_address)
-            self.logger.info(f"➕ Assigned IP {hl(ip_address)} to interface {hl(interface)}")
-
-        return ip_address
+        return address
 
     def _set_primary_ips(self, device, ipv4_address, ipv6_address):
         """Set primary IPv4 and IPv6 addresses on the device."""
@@ -388,8 +389,8 @@ class ConfigureExistingInterfaceForManagement(Job):
 
         for prefix in prefixes:
             try:
-                next_ip = self._get_next_available_ip(prefix)
-                ip_address = self._create_ip_address(next_ip, configured_interface, device, vlan)
+                next_ip = prefix.get_first_available_ip()
+                ip_address = self._configure_ip_address(next_ip, configured_interface, device, vlan)
 
                 if prefix.ip_version == 4:
                     ipv4_address = ip_address
