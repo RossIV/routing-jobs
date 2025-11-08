@@ -74,10 +74,10 @@ class CreateLoopbackInterface(Job):
     def _get_loopback_prefix_queryset(self, vrf, ip_version):
         """Get the queryset for loopback prefixes matching the specified criteria."""
         return Prefix.objects.filter(
-            vrf=vrf,
+            vrfs=vrf,
             ip_version=ip_version,
             role__name="Loopback",
-            type="Network"
+            type="network"
         ).exclude(
             status__name="Deprecated"
         ).order_by("prefix_length")
@@ -145,19 +145,19 @@ class CreateLoopbackInterface(Job):
         """Generate DNS name for the interface."""
         clean_name = self._clean_interface_name(interface_name)
         # Format: (clean interface name).(device name).(vrf name).net.25.scconf.org
-        dns_name = f"{clean_name}.{device.name}.{vrf.name}.net.{constants.LOOPBACK_DNS_DOMAIN}"
+        dns_name = f"{clean_name}.{device.name}.{vrf.name}.{constants.LOOPBACK_DNS_DOMAIN}"
         return dns_name
 
     def _allocate_ipv4_address(self, prefix, interface_name, device, vrf):
         """Allocate an IPv4 address from the loopback prefix."""
         # Use Nautobot's native IPAM to get next available IP
-        next_ip = prefix.available_ips.first()
+        next_ip = prefix.get_first_available_ip()
         
         if not next_ip:
             raise RuntimeError(f"No available IPv4 addresses in prefix {prefix.prefix}")
 
         # Create IP address as /32
-        ip_str = str(next_ip) + "/32"
+        ip_str = str(next_ip).split('/')[0] + "/32"
         
         ip_address = IPAddress.objects.create(
             address=ip_str,
@@ -165,7 +165,6 @@ class CreateLoopbackInterface(Job):
             type="host",
             status=self.active_status,
             role=self.loopback_role,
-            vrf=vrf,
             dns_name=self._generate_dns_name(device, interface_name, vrf),
             description=f"{device.name} {interface_name}",
         )
@@ -198,13 +197,13 @@ class CreateLoopbackInterface(Job):
             self.logger.info(f"📐 Derived IPv6 address from IPv4: {ipv6_str}")
         else:
             # Use Nautobot's native IPAM to get next available IP
-            next_ip = prefix.available_ips.first()
+            next_ip = prefix.get_first_available_ip()
             
             if not next_ip:
                 raise RuntimeError(f"No available IPv6 addresses in prefix {prefix.prefix}")
 
             # Create IP address as /128
-            ipv6_str = str(next_ip) + "/128"
+            ipv6_str = str(next_ip).split('/')[0] + "/128"
 
         # Check if this IP is already in use
         existing_ip = IPAddress.objects.filter(address=ipv6_str).first()
@@ -224,7 +223,6 @@ class CreateLoopbackInterface(Job):
             type="host",
             status=self.active_status,
             role=self.loopback_role,
-            vrf=vrf,
             dns_name=self._generate_dns_name(device, interface_name, vrf),
             description=f"{device.name} {interface_name}"
         )
