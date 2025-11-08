@@ -12,8 +12,8 @@ from nautobot.apps.jobs import Job, ObjectVar, StringVar, ChoiceVar, BooleanVar
 from ipaddress import ip_network
 from django.contrib.contenttypes.models import ContentType
 
-from utils import hl
-import constants
+from .utils import hl
+from . import constants
 
 name = "SC25 Routing Jobs"  # Grouping shown in the UI
 

@@ -10,8 +10,8 @@ from nautobot.ipam.models import Prefix, IPAddress, VRF
 from nautobot.extras.models import Status, Role
 from nautobot.apps.jobs import Job, ObjectVar, StringVar, ChoiceVar
 
-from utils import hl
-import constants
+from .utils import hl
+from . import constants
 
 name = "SC25 Routing Jobs"  # Grouping shown in the UI
 
