@@ -138,8 +138,8 @@ class CreateLoopbackInterface(Job):
 
     def _clean_interface_name(self, interface_name):
         """Clean interface name for DNS usage."""
-        # Replace any character that isn't A-Z, a-z, or 0-9 with an underscore
-        return re.sub(r'[^A-Za-z0-9]', '_', interface_name)
+        # Replace any character that isn't A-Z, a-z, or 0-9 with an underscore, and make it all lowercase
+        return re.sub(r'[^A-Za-z0-9]', '_', interface_name).lower()
 
     def _generate_dns_name(self, device, interface_name, vrf):
         """Generate DNS name for the interface."""
@@ -176,17 +176,13 @@ class CreateLoopbackInterface(Job):
         """Derive IPv6 address from IPv4 address using same host bits."""
         # Get host bits from IPv4
         ipv4_obj = ip_address(ipv4_address.address.ip)
-        host_bits = int(ipv4_obj)
+        last_octet = str(ipv4_obj).split('.')[-1]
 
         # Get the base IPv6 network
         ipv6_network = ip_network(v6_prefix.prefix)
-
-        # Create IPv6 address with same host bits as IPv4
-        # For IPv6, we need to add the host bits to the network address
-        ipv6_address = IPv6Address(int(ipv6_network.network_address) + host_bits)
         
         # Return as string with /128
-        ipv6_str = f"{ipv6_address}/128"
+        ipv6_str = f"{str(ipv6_network.network_address)}{last_octet}/128"
         return ipv6_str
 
     def _allocate_ipv6_address(self, prefix, interface_name, device, vrf, existing_ipv4=None):
