@@ -1,14 +1,16 @@
 from django.db import transaction
-from django.db.models import Q
 from functools import lru_cache
-from ipaddress import ip_address, ip_network, IPv4Address, IPv6Address
+from ipaddress import ip_address, ip_network
+from textwrap import dedent
+import csv
+import io
 import re
 
 from nautobot.dcim.models import Device, Interface
 from nautobot.apps.choices import InterfaceTypeChoices
 from nautobot.ipam.models import Prefix, IPAddress, VRF
 from nautobot.extras.models import Status, Role
-from nautobot.apps.jobs import Job, ObjectVar, StringVar, ChoiceVar
+from nautobot.apps.jobs import Job, ObjectVar, StringVar, ChoiceVar, TextVar, FileVar
 
 from .utils import hl
 from . import constants
@@ -16,50 +18,10 @@ from . import constants
 name = "SC25 Routing Jobs"  # Grouping shown in the UI
 
 
-class CreateLoopbackInterface(Job):
-    """
-    Create a new virtual loopback interface for a device with the following capabilities:
-    - Create a new virtual interface with specified name
-    - Set appropriate role, status, and VRF
-    - Allocate IP addresses from loopback prefixes (role="Loopback", type="Network")
-    - Set DNS names following naming convention
-    """
+class LoopbackInterfaceJobMixin:
+    """Shared behavior for loopback interface creation jobs."""
 
-    # Input variables
-    device = ObjectVar(
-        description="Device to create loopback interface for",
-        required=True,
-        model=Device,
-        display_field="name",
-    )
-
-    interface_name = StringVar(
-        description="Interface name for the new loopback interface",
-        required=True,
-    )
-
-    vrf = ObjectVar(
-        description="VRF for the loopback interface",
-        required=True,
-        model=VRF,
-        display_field="name",
-    )
-
-    ip_version = ChoiceVar(
-        choices=[
-            ("ipv4", "IPv4 only"),
-            ("ipv6", "IPv6 only"),
-            ("both", "Both IPv4 and IPv6"),
-        ],
-        description="IP version(s) to allocate",
-        required=True,
-        default="both",
-    )
-
-    class Meta:
-        name = "Create Loopback Interface"
-        description = "Create a new virtual loopback interface for a device including IP allocation"
-        has_sensitive_variables = False
+    IP_VERSION_CHOICES = {"ipv4", "ipv6", "both"}
 
     @property
     @lru_cache(maxsize=1)
@@ -241,53 +203,60 @@ class CreateLoopbackInterface(Job):
         self.logger.info(f"➕ Created loopback interface: {hl(interface)}")
         return interface
 
-    @transaction.atomic
-    def run(self, device, interface_name, vrf, ip_version):
-        """Main execution method."""
+    def _normalize_ip_version(self, ip_version):
+        """Validate and normalize the IP version selection."""
+        normalized = (ip_version or "").strip().lower()
+        if normalized not in self.IP_VERSION_CHOICES:
+            raise RuntimeError(
+                f"Invalid IP version selection '{ip_version}'. Must be one of: {', '.join(sorted(self.IP_VERSION_CHOICES))}."
+            )
+        return normalized
+
+    def create_loopback(self, device, interface_name, vrf, ip_version):
+        """Execute the end-to-end loopback creation workflow."""
+        normalized_ip_version = self._normalize_ip_version(ip_version)
         self.logger.info(f"🚀 Starting loopback interface creation for device: {hl(device)}")
 
-        # Step 1: Perform sanity checks
-        self._perform_sanity_checks(device, interface_name, vrf, ip_version)
+        with transaction.atomic():
+            # Step 1: Perform sanity checks
+            self._perform_sanity_checks(device, interface_name, vrf, normalized_ip_version)
 
-        # Step 2: Find loopback prefixes
-        prefixes = self._find_loopback_prefixes(vrf, ip_version)
+            # Step 2: Find loopback prefixes
+            prefixes = self._find_loopback_prefixes(vrf, normalized_ip_version)
 
-        # Step 3: Allocate IP addresses
-        ipv4_address = None
-        ipv6_address = None
+            # Step 3: Allocate IP addresses
+            ipv4_address = None
+            ipv6_address = None
 
-        # Allocate IPv4 if needed
-        if ip_version in ["ipv4", "both"]:
-            ipv4_address = self._allocate_ipv4_address(
-                prefixes['v4'],
-                interface_name,
-                device,
-                vrf
-            )
+            if normalized_ip_version in {"ipv4", "both"}:
+                ipv4_address = self._allocate_ipv4_address(
+                    prefixes["v4"],
+                    interface_name,
+                    device,
+                    vrf,
+                )
 
-        # Allocate IPv6 if needed
-        if ip_version in ["ipv6", "both"]:
-            ipv6_address = self._allocate_ipv6_address(
-                prefixes['v6'],
-                interface_name,
-                device,
-                vrf,
-                existing_ipv4=ipv4_address if ip_version == "both" else None
-            )
+            if normalized_ip_version in {"ipv6", "both"}:
+                ipv6_address = self._allocate_ipv6_address(
+                    prefixes["v6"],
+                    interface_name,
+                    device,
+                    vrf,
+                    existing_ipv4=ipv4_address if normalized_ip_version == "both" else None,
+                )
 
-        # Step 4: Create loopback interface
-        interface = self._create_loopback_interface(device, interface_name, vrf)
+            # Step 4: Create loopback interface
+            interface = self._create_loopback_interface(device, interface_name, vrf)
 
-        # Step 5: Attach IP addresses to interface
-        if ipv4_address:
-            interface.ip_addresses.add(ipv4_address)
-            self.logger.info(f"➕ Attached IPv4 {hl(ipv4_address)} to interface {hl(interface)}")
+            # Step 5: Attach IP addresses to interface
+            if ipv4_address:
+                interface.ip_addresses.add(ipv4_address)
+                self.logger.info(f"➕ Attached IPv4 {hl(ipv4_address)} to interface {hl(interface)}")
 
-        if ipv6_address:
-            interface.ip_addresses.add(ipv6_address)
-            self.logger.info(f"➕ Attached IPv6 {hl(ipv6_address)} to interface {hl(interface)}")
+            if ipv6_address:
+                interface.ip_addresses.add(ipv6_address)
+                self.logger.info(f"➕ Attached IPv6 {hl(ipv6_address)} to interface {hl(interface)}")
 
-        # Summary
         dns_name = self._generate_dns_name(device, interface_name, vrf)
         self.logger.info(f"""
         ✅ Loopback interface creation completed for {hl(device)}:
@@ -298,4 +267,204 @@ class CreateLoopbackInterface(Job):
         IPv6: {hl(ipv6_address) if ipv6_address else 'Not allocated'}
         DNS Name: {dns_name}
         """)
+
+        return {
+            "interface": interface,
+            "device": device,
+            "vrf": vrf,
+            "ipv4_address": ipv4_address,
+            "ipv6_address": ipv6_address,
+            "dns_name": dns_name,
+            "ip_version": normalized_ip_version,
+        }
+
+
+class CreateLoopbackInterface(LoopbackInterfaceJobMixin, Job):
+    """
+    Create a new virtual loopback interface for a device with the following capabilities:
+    - Create a new virtual interface with specified name
+    - Set appropriate role, status, and VRF
+    - Allocate IP addresses from loopback prefixes (role="Loopback", type="Network")
+    - Set DNS names following naming convention
+    """
+
+    # Input variables
+    device = ObjectVar(
+        description="Device to create loopback interface for",
+        required=True,
+        model=Device,
+        display_field="name",
+    )
+
+    interface_name = StringVar(
+        description="Interface name for the new loopback interface",
+        required=True,
+    )
+
+    vrf = ObjectVar(
+        description="VRF for the loopback interface",
+        required=True,
+        model=VRF,
+        display_field="name",
+    )
+
+    ip_version = ChoiceVar(
+        choices=[
+            ("ipv4", "IPv4 only"),
+            ("ipv6", "IPv6 only"),
+            ("both", "Both IPv4 and IPv6"),
+        ],
+        description="IP version(s) to allocate",
+        required=True,
+        default="both",
+    )
+
+    class Meta:
+        name = "Create Loopback Interface"
+        description = "Create a new virtual loopback interface for a device including IP allocation"
+        has_sensitive_variables = False
+
+    @transaction.atomic
+    def run(self, device, interface_name, vrf, ip_version):
+        """Main execution method."""
+        result = self.create_loopback(device, interface_name, vrf, ip_version)
+        return (
+            f"Created loopback interface {result['interface']} on device {result['device']} "
+            f"for VRF {result['vrf']} (IPv4: "
+            f"{result['ipv4_address'] if result['ipv4_address'] else 'n/a'}, IPv6: "
+            f"{result['ipv6_address'] if result['ipv6_address'] else 'n/a'})."
+        )
+
+
+class BulkCreateLoopbackInterfaces(LoopbackInterfaceJobMixin, Job):
+    """Create loopback interfaces in bulk from a CSV file."""
+
+    csv_file = FileVar(
+        description=(
+            "CSV file with headers device,interface_name,vrf,ip_version. "
+            "Each row will create one loopback interface."
+        ),
+        required=False,
+    )
+    csv_text = TextVar(
+        description=dedent("""\
+        CSV Text in the format of:
+
+        <pre>
+        device,interface_name,vrf,ip_version
+        noc-rtr-csco-1,Loopback0,scinet,both
+        dnoc1234-sw-noka-1,Loopback100,scinet,ipv6
+        conf-rtr-jnpr-1,lo0.1000,dmz,ipv4
+        </pre>
+        """),
+        required=False,
+        label="CSV Text",
+    )
+
+    class Meta:
+        name = "Bulk Create Loopback Interfaces"
+        description = "Create multiple loopback interfaces from a CSV file"
+        has_sensitive_variables = False
+
+    def _obtain_csv_text(self, csv_file, csv_text):
+        """Return CSV text from either an uploaded file or pasted text."""
+        if csv_file and csv_text:
+            raise RuntimeError("Please provide either a CSV file or CSV text, not both.")
+
+        if csv_file:
+            raw_data = csv_file.read()
+            if isinstance(raw_data, bytes):
+                return raw_data.decode("utf-8-sig")
+            return raw_data
+
+        if csv_text:
+            stripped = csv_text.strip()
+            if not stripped:
+                raise RuntimeError("CSV text input is empty.")
+            return stripped
+
+        raise RuntimeError("Provide a CSV file upload or paste CSV text to run this job.")
+
+    def _load_csv_rows(self, csv_text):
+        """Yield normalized rows from provided CSV text."""
+        reader = csv.DictReader(io.StringIO(csv_text))
+        if not reader.fieldnames:
+            raise RuntimeError("CSV file must include a header row.")
+
+        normalized_headers = [header.strip().lower() for header in reader.fieldnames]
+        required_headers = {"device", "interface_name", "vrf", "ip_version"}
+        missing_headers = required_headers.difference(normalized_headers)
+        if missing_headers:
+            raise RuntimeError(f"CSV file is missing required columns: {', '.join(sorted(missing_headers))}")
+
+        header_map = {header.strip().lower(): header for header in reader.fieldnames}
+
+        for row in reader:
+            # Skip completely blank lines
+            if all((value is None or not str(value).strip()) for value in row.values()):
+                continue
+
+            yield {
+                "csv_line": reader.line_num,
+                "device": (row.get(header_map["device"]) or "").strip(),
+                "interface_name": (row.get(header_map["interface_name"]) or "").strip(),
+                "vrf": (row.get(header_map["vrf"]) or "").strip(),
+                "ip_version": (row.get(header_map["ip_version"]) or "").strip() or "both",
+            }
+
+    def _resolve_objects(self, device_name, vrf_name):
+        """Retrieve Device and VRF objects by name."""
+        if not device_name:
+            raise RuntimeError("Device name is required")
+        if not vrf_name:
+            raise RuntimeError("VRF name is required")
+
+        try:
+            device = Device.objects.get(name=device_name)
+        except Device.DoesNotExist as exc:
+            raise RuntimeError(f"Device '{device_name}' not found") from exc
+
+        try:
+            vrf = VRF.objects.get(name=vrf_name)
+        except VRF.DoesNotExist as exc:
+            raise RuntimeError(f"VRF '{vrf_name}' not found") from exc
+
+        return device, vrf
+
+    def run(self, csv_file, csv_text):
+        successes = 0
+        failures = 0
+        messages = []
+
+        csv_content = self._obtain_csv_text(csv_file, csv_text)
+
+        for row in self._load_csv_rows(csv_content):
+            try:
+                device, vrf = self._resolve_objects(row["device"], row["vrf"])
+                if not row["interface_name"]:
+                    raise RuntimeError("Interface name is required")
+                result = self.create_loopback(
+                    device=device,
+                    interface_name=row["interface_name"],
+                    vrf=vrf,
+                    ip_version=row["ip_version"],
+                )
+                successes += 1
+                messages.append(
+                    f"Line {row['csv_line']}: created interface {result['interface']} on {result['device']} "
+                    f"(VRF {result['vrf']})."
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                failures += 1
+                message = f"Line {row.get('csv_line', '?')}: failed to create loopback - {exc}"
+                self.logger.error(f"❌ {message}")
+                messages.append(message)
+
+        summary = (
+            f"Bulk loopback creation finished with {successes} success(es) and {failures} failure(s)."
+        )
+        self.logger.info(summary)
+
+        detailed_summary = "\n".join(messages) if messages else "No rows processed."
+        return f"{summary}\n{detailed_summary}"
 
