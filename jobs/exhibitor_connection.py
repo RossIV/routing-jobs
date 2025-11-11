@@ -219,7 +219,7 @@ class CreateExhibitorConnection(Job):
 
     def _find_container_prefix(self, ip_version, connection_type):
         """Find container prefix for allocation."""
-        type_filter = "Container"
+        type_filter = "container"
         role_filter = "Exhibitor Connection (L3)"
 
         prefixes = Prefix.objects.filter(
