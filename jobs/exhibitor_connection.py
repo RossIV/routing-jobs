@@ -77,7 +77,7 @@ class CreateExhibitorConnection(Job):
         model=Device,
         display_field="name",
         query_params={
-            "role__name__in": ["DNOC Switch", "NOC Router", "SCN Router"]
+            "role": ["DNOC Switch", "NOC Router", "SCN Router"]
         },
     )
 
