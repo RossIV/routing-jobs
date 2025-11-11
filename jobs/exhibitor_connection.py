@@ -293,6 +293,7 @@ class CreateExhibitorConnection(Job):
 
         # Associate prefix with circuit via custom relationship
         try:
+            # TODO: This doesn't look like it'll work. Thanks, AI.
             relationship = Relationship.objects.get(key='prefix')
             source_type = ContentType.objects.get_for_model(Circuit)
             destination_type = ContentType.objects.get_for_model(Prefix)
