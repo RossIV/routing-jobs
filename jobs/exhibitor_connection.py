@@ -32,7 +32,6 @@ class CreateExhibitorConnection(Job):
         display_field="name",
         query_params={
             "tenant__isnull": False,
-            "tenant__tenant_group__name__in": ["Exhibitor", "SCinet"]
         },
     )
 
