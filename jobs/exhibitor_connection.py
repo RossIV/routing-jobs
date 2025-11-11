@@ -37,18 +37,19 @@ class CreateExhibitorConnection(Job):
 
     connection_identifier = ChoiceVar(
         choices=[(chr(i), chr(i)) for i in range(ord('A'), ord('Z') + 1)],
-        description="Connection identifier (A-Z)",
         required=True,
     )
 
     ipv4_enabled = BooleanVar(
-        description="Enable IPv4",
+        label="Enable IPv4",
+        description="Allocates an IPv4 subnet for the connection",
         required=True,
         default=True,
     )
 
     ipv6_enabled = BooleanVar(
-        description="Enable IPv6",
+        label="Enable IPv6",
+        description="Allocates an IPv6 subnet for the connection",
         required=True,
         default=True,
     )
@@ -64,7 +65,8 @@ class CreateExhibitorConnection(Job):
             ("25", "/25"),
             ("24", "/24"),
         ],
-        description="Subnet size for IPv4 (CIDR notation)",
+        description="Size of IPv4 subnet to allocate",
+        label="Subnet Size (IPv4)",
         required=True,
         default="27",
     )
