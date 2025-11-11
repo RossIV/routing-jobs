@@ -314,13 +314,8 @@ class CreateExhibitorConnection(Job):
     def _create_ip_address_from_prefix(self, prefix, circuit_name, location):
         """Create an IP address from the prefix (first host or ::1 for IPv6)."""
         prefix_network = ip_network(str(prefix.prefix))
-        
-        if prefix.ip_version == 6:
-            # Use ::1 for IPv6
-            ip_address_str = f"{prefix_network.network_address + 1}/{prefix.prefix_length}"
-        else:
-            # Use first host for IPv4
-            ip_address_str = f"{prefix_network.network_address + 1}/{prefix.prefix_length}"
+
+        ip_address_str = f"{prefix_network.network_address + 1}/{prefix.prefix_length}"
         
         # Get VRF
         vrf = prefix.vrf if prefix.vrf else None
