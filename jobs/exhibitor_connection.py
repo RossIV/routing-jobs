@@ -272,6 +272,7 @@ class CreateExhibitorConnection(Job):
         
         # Create prefix object
         prefix = Prefix(
+            type="network",
             prefix=str(available_subnet),
             ip_version=ip_version,
             status=self.active_status,
@@ -280,7 +281,6 @@ class CreateExhibitorConnection(Job):
             tenant=location.tenant,
             namespace=namespace,
         )
-        prefix.type = "Network"
         prefix.save()
 
         # Assign to VRF based on firewalled status
