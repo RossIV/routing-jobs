@@ -241,9 +241,16 @@ class CreateExhibitorConnection(Job):
         # Get available prefixes
         available_prefixes = container_prefix.get_available_prefixes()
 
-        existing_ranges = set()
-        for subnet in existing_subnets:
-            existing_ranges.add(ip_network(str(subnet.prefix)))
+        # Find the first available block that can fit our desired prefix
+        next_prefix = None
+        for available_block in available_prefixes.iter_cidrs():
+            # Check if this block is large enough (smaller/shorter prefix length = larger block)
+            if available_block.prefixlen <= prefix_length:
+                # Subnet this block to get a prefix of our desired size
+                prefixes = list(available_block.subnet(prefix_length))
+                next_prefix = prefixes[0]  # Get the first prefix
+                self.logger.debug(f"Found available /{prefix_length}: {next_prefix}")
+                return next_prefix
 
         raise RuntimeError(f"No available /{prefix_length} prefix in container {container_prefix.prefix}")
 
