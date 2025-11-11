@@ -236,29 +236,16 @@ class CreateExhibitorConnection(Job):
 
         return prefixes.first()
 
-    def _find_next_available_subnet(self, container_prefix, prefix_length):
-        """Find the next available subnet of the specified length within the container."""
-        container_network = ip_network(str(container_prefix.prefix))
-        
-        # Get all existing subnets within this container
-        existing_subnets = Prefix.objects.filter(
-            prefix__net_contained_or_equal=str(container_prefix.prefix),
-            prefix_length=prefix_length
-        ).exclude(
-            status__name="Deprecated"
-        )
+    def _find_next_available_prefix(self, container_prefix, prefix_length):
+        """Find the next available prefix of the specified length within the container."""
+        # Get available prefixes
+        available_prefixes = container_prefix.get_available_prefixes()
 
         existing_ranges = set()
         for subnet in existing_subnets:
             existing_ranges.add(ip_network(str(subnet.prefix)))
 
-        # Find the first available subnet
-        subnet_gen = container_network.subnets(new_prefix=prefix_length)
-        for subnet in subnet_gen:
-            if subnet not in existing_ranges:
-                return subnet
-        
-        raise RuntimeError(f"No available /{prefix_length} subnet in container {container_prefix.prefix}")
+        raise RuntimeError(f"No available /{prefix_length} prefix in container {container_prefix.prefix}")
 
     def _allocate_prefix(self, circuit, location, ip_version, prefix_length, connection_type, firewalled):
         """Allocate a new prefix for the circuit."""
@@ -269,8 +256,8 @@ class CreateExhibitorConnection(Job):
         # Find container prefix
         container_prefix = self._find_container_prefix(ip_version, connection_type)
         
-        # Find next available subnet
-        available_subnet = self._find_next_available_subnet(container_prefix, prefix_length)
+        # Find next available prefix
+        available_subnet = self._find_next_available_prefix(container_prefix, prefix_length)
         
         # Create new prefix
         # Get namespace from container
