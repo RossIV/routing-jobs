@@ -283,14 +283,13 @@ class CreateExhibitorConnection(Job):
         )
         prefix.save()
 
-        # Assign to VRF based on firewalled status
-        vrf_name = "exhibitor" if firewalled else "dmz"
-        try:
-            vrf = VRF.objects.get(name=vrf_name)
-            prefix.vrf = vrf
-            prefix.save()
-        except VRF.DoesNotExist:
-            self.logger.warning(f"VRF '{vrf_name}' not found, skipping VRF assignment")
+        # Associate prefix with VRF
+        target_vrf = "exhibitor" if firewalled else "dmz"
+        vrf = VRF.objects.get(name=target_vrf)
+        if not vrf:
+            raise RuntimeError(f"VRF {target_vrf} not found")
+        prefix.vrfs.set([vrf])
+        self.logger.info(f"➕ Associated prefix {hl(prefix)} to VRF {target_vrf}")
 
         # Associate prefix with circuit via custom relationship
         try:
