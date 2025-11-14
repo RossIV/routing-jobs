@@ -147,17 +147,21 @@ class CreateExhibitorConnection(Job):
 
     def _extract_booth_number(self, location_name):
         """Extract booth number from location name using regex."""
+        self.logger.debug(f"Extracting booth number from location name '{location_name}'")
         match = re.search(r'(\d+)', location_name)
         if not match:
             raise RuntimeError(f"Could not extract booth number from location name: {location_name}")
+        self.logger.debug(f"Extracted booth number '{match.group(1)}'")
         return match.group(1)
 
     def _generate_circuit_name(self, booth_number, connection_identifier):
         """Generate circuit name from booth number and connection identifier."""
+        self.logger.debug(f"Generating circuit name from booth '{booth_number}' and identifier '{connection_identifier}'")
         return f"{booth_number}-{connection_identifier}"
 
     def _check_duplicate_circuit(self, circuit_name):
         """Check if a circuit with the same name already exists."""
+        self.logger.debug(f"Checking for duplicate circuit with CID '{circuit_name}'")
         existing_circuit = Circuit.objects.filter(cid=circuit_name).first()
         if existing_circuit:
             raise RuntimeError(f"Circuit with CID '{circuit_name}' already exists: {hl(existing_circuit)}")
@@ -171,6 +175,8 @@ class CreateExhibitorConnection(Job):
 
     def _create_circuit(self, location, device, connection_identifier, speed):
         """Create a circuit for the exhibitor connection."""
+        self.logger.debug(f"Creating circuit for location {hl(location)} on device {hl(device)} "
+                          f"with identifier '{connection_identifier}' and speed '{speed}'")
         booth_number = self._extract_booth_number(location.name)
         circuit_name = self._generate_circuit_name(booth_number, connection_identifier)
 
@@ -226,10 +232,12 @@ class CreateExhibitorConnection(Job):
         if not prefixes.exists():
             raise RuntimeError(f"No container prefixes found for IPv{ip_version} with role '{role_filter}' in Global namespace")
 
+        self.logger.debug(f"Found {prefixes.count()} container prefix(es) for IPv{ip_version} and role '{role_filter}'")
         return prefixes.first()
 
     def _find_next_available_prefix(self, container_prefix, prefix_length):
         """Find the next available prefix of the specified length within the container."""
+        self.logger.debug(f"Searching for next available /{prefix_length} inside container {hl(container_prefix)}")
         # Get available prefixes
         available_prefixes = container_prefix.get_available_prefixes()
 
@@ -250,8 +258,11 @@ class CreateExhibitorConnection(Job):
         """Allocate a new prefix for the circuit."""
         # Only allocate if connection type is Exhibitor
         if connection_type != "Exhibitor":
+            self.logger.debug(f"Skipping prefix allocation for connection type '{connection_type}'")
             return None
 
+        self.logger.debug(f"Allocating IPv{ip_version} /{prefix_length} prefix "
+                          f"for circuit {hl(circuit)} (firewalled={firewalled})")
         # Find container prefix
         container_prefix = self._find_container_prefix(ip_version, connection_type)
         
@@ -305,9 +316,16 @@ class CreateExhibitorConnection(Job):
 
     def _create_ip_address_from_prefix(self, prefix, circuit_name, location):
         """Create an IP address from the prefix (first host or ::1 for IPv6)."""
+        self.logger.debug(f"Creating IP address from prefix {hl(prefix)} for circuit '{circuit_name}'")
         prefix_network = ip_network(str(prefix.prefix))
+        self.logger.debug(f"Prefix network: {prefix_network}")
 
         ip_address_str = f"{prefix_network.network_address + 1}/{prefix.prefix_length}"
+        self.logger.debug(f"IP address string: {ip_address_str}")
+        self.logger.debug(f"Prefix length: {prefix.prefix_length}")
+        self.logger.debug(f"Prefix network address: {prefix_network.network_address}")
+        self.logger.debug(f"Prefix network address + 1: {prefix_network.network_address + 1}")
+        self.logger.debug(f"IP address string: {ip_address_str}")
 
         # Create IP address
         ip_address = IPAddress.objects.create(
@@ -321,6 +339,8 @@ class CreateExhibitorConnection(Job):
 
         # Set DNS name
         booth_number = self._extract_booth_number(location.name)
+        self.logger.debug(f"Booth number: {booth_number}")
+        self.logger.debug(f"Circuit name: {circuit_name}")
         # Extract connection identifier from circuit name
         conn_id = circuit_name.split('-')[1] if '-' in circuit_name else 'A'
         dns_name = f"{conn_id}01.{booth_number}.{constants.MANAGEMENT_DNS_DOMAIN}"
@@ -332,6 +352,7 @@ class CreateExhibitorConnection(Job):
 
     def _configure_interface(self, interface, ip_addresses, circuit_name, location):
         """Configure interface with IP addresses and description."""
+        self.logger.debug(f"Configuring interface {hl(interface)} with {len(ip_addresses)} IP(s) for circuit '{circuit_name}'")
         # Get VRF from first IP address
         vrf = ip_addresses[0].vrf if ip_addresses and ip_addresses[0].vrf else None
         
