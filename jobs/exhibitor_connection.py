@@ -137,11 +137,6 @@ class CreateExhibitorConnection(Job):
 
     @property
     @lru_cache(maxsize=1)
-    def exhibitor_role(self):
-        return Role.objects.get(name="Exhibitor Connection")
-
-    @property
-    @lru_cache(maxsize=1)
     def exhibitor_connection_role(self):
         return Role.objects.get(name="Exhibitor Connection (L3)")
 
@@ -187,7 +182,7 @@ class CreateExhibitorConnection(Job):
             type=None,  # Set if needed
             status=self.planned_status,
             tenant=location.tenant,
-            role=self.exhibitor_role,
+            role=self.exhibitor_connection_role,
             commit_rate=speed,
             description=f"Exhibitor connection for {location.name}",
         )
