@@ -1,5 +1,4 @@
 from django.db import transaction
-from django.db.models import Q
 from functools import lru_cache
 import re
 
@@ -7,7 +6,6 @@ from nautobot.dcim.models import Device, Interface, Location
 from nautobot.circuits.models import Circuit, Provider, CircuitTermination
 from nautobot.ipam.models import Prefix, IPAddress, VRF
 from nautobot.extras.models import Status, Role, Relationship, RelationshipAssociation
-from nautobot.tenancy.models import Tenant
 from nautobot.apps.jobs import Job, ObjectVar, StringVar, ChoiceVar, BooleanVar
 from ipaddress import ip_network
 from django.contrib.contenttypes.models import ContentType
