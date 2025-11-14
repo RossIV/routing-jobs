@@ -4,7 +4,7 @@ from functools import lru_cache
 import re
 
 from nautobot.dcim.models import Device, Interface, Location
-from nautobot.circuits.models import Circuit, Provider, CircuitTermination, CircuitType
+from nautobot.circuits.models import Circuit, Provider, CircuitTermination
 from nautobot.ipam.models import Prefix, IPAddress, VRF
 from nautobot.extras.models import Status, Role, Relationship, RelationshipAssociation
 from nautobot.tenancy.models import Tenant
@@ -164,26 +164,14 @@ class CreateExhibitorConnection(Job):
         if existing_circuit:
             raise RuntimeError(f"Circuit with CID '{circuit_name}' already exists: {hl(existing_circuit)}")
 
-    def _get_dnoc_location(self, location):
-        """Get DNOC location from custom relationship."""
-        try:
-            # Access the custom relationship using Nautobot's relationship API
-            relationship = Relationship.objects.get(key='booth_to_dnoc')
-            
-            # Get the relationship association
-            relationships = location.get_relationships()
-            for rel_key, rel_data in relationships.items():
-                if rel_key == 'booth_to_dnoc':
-                    # Return the destination (many side)
-                    destinations = rel_data.get('destinations', [])
-                    if destinations:
-                        return destinations[0]
-            
-            raise RuntimeError(f"No DNOC location found via relationship 'booth_to_dnoc' for {hl(location)}")
-        except Exception as e:
-            raise RuntimeError(f"Could not find DNOC location for {hl(location)}: {str(e)}")
+    def _get_device_rack(self, device):
+        """Return the rack associated with the provided device."""
+        rack = getattr(device, "rack", None)
+        if not rack:
+            raise RuntimeError(f"Device {hl(device)} is not assigned to a rack; cannot terminate circuit on A-side.")
+        return rack
 
-    def _create_circuit(self, location, connection_identifier, speed):
+    def _create_circuit(self, location, device, connection_identifier, speed):
         """Create a circuit for the exhibitor connection."""
         booth_number = self._extract_booth_number(location.name)
         circuit_name = self._generate_circuit_name(booth_number, connection_identifier)
@@ -191,8 +179,8 @@ class CreateExhibitorConnection(Job):
         # Check for duplicates
         self._check_duplicate_circuit(circuit_name)
 
-        # Get DNOC location
-        dnoc_location = self._get_dnoc_location(location)
+        # Determine A-side rack from the device
+        device_rack = self._get_device_rack(device)
 
         # Create circuit
         circuit = Circuit.objects.create(
@@ -209,11 +197,11 @@ class CreateExhibitorConnection(Job):
         self.logger.info(f"➕ Created circuit: {hl(circuit)}")
 
         # Create terminations
-        # A Side: DNOC location
+        # A Side: Device location
         CircuitTermination.objects.create(
             circuit=circuit,
             term_side='A',
-            location=dnoc_location,
+            location=device.location,
         )
 
         # Z Side: Booth location
@@ -223,7 +211,7 @@ class CreateExhibitorConnection(Job):
             location=location,
         )
 
-        self.logger.info(f"➕ Created circuit terminations: A-side={hl(dnoc_location)}, Z-side={hl(location)}")
+        self.logger.info(f"➕ Created circuit terminations: A-side={hl(device.location)}, Z-side location={hl(location)}")
 
         return circuit
 
@@ -377,7 +365,7 @@ class CreateExhibitorConnection(Job):
         self.logger.info(f"🚀 Starting exhibitor connection creation for location: {hl(location)}")
 
         # Step 1: Create circuit
-        circuit = self._create_circuit(location, connection_identifier, speed)
+        circuit = self._create_circuit(location, device, connection_identifier, speed)
         
         # Step 2: Allocate prefixes
         prefixes = []
