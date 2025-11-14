@@ -81,6 +81,16 @@ class CreateExhibitorConnection(Job):
         },
     )
 
+    interface = ObjectVar(
+        description="Interface on the selected device to connect to the exhibitor equipment",
+        required=True,
+        model=Interface,
+        display_field="name",
+        query_params={
+            "device_id": "$device",
+        },
+    )
+
     speed = ChoiceVar(
         choices=[
             (1000000, "1 Gbps"),
@@ -342,19 +352,6 @@ class CreateExhibitorConnection(Job):
         self.logger.info(f"➕ Created IP address: {hl(ip_address)}")
         return ip_address
 
-    def _find_next_available_interface(self, device):
-        """Find the next available interface with role 'Exhibitor Connection (L3)'."""
-        interfaces = Interface.objects.filter(
-            device=device,
-            role__name="Exhibitor Connection (L3)",
-            ip_addresses__isnull=True
-        ).order_by('name')
-
-        if not interfaces.exists():
-            raise RuntimeError(f"No available interfaces with role 'Exhibitor Connection (L3)' on {hl(device)}")
-
-        return interfaces.first()
-
     def _configure_interface(self, interface, ip_addresses, circuit_name, location):
         """Configure interface with IP addresses and description."""
         # Get VRF from first IP address
@@ -375,7 +372,7 @@ class CreateExhibitorConnection(Job):
 
     @transaction.atomic
     def run(self, location, connection_identifier, ipv4_enabled, ipv6_enabled, 
-            subnet_size_ipv4, device, speed, connection_type, firewalled):
+            subnet_size_ipv4, device, interface, speed, connection_type, firewalled):
         """Main execution method."""
         self.logger.info(f"🚀 Starting exhibitor connection creation for location: {hl(location)}")
 
@@ -405,10 +402,11 @@ class CreateExhibitorConnection(Job):
             self.logger.warning("No IP addresses were created")
 
         # Step 4: Configure interface
-        interface = None
+        configured_interface = None
         if ip_addresses:
-            interface = self._find_next_available_interface(device)
-            self._configure_interface(interface, ip_addresses, circuit.cid, location)
+            if interface.device_id != device.id:
+                raise RuntimeError(f"Selected interface {hl(interface)} does not belong to device {hl(device)}")
+            configured_interface = self._configure_interface(interface, ip_addresses, circuit.cid, location)
 
         # Summary
         self.logger.info(f"""
@@ -419,6 +417,6 @@ class CreateExhibitorConnection(Job):
         Prefixes: {[hl(p) for p in prefixes]}
         IP Addresses: {[hl(ip) for ip in ip_addresses]}
         Device: {hl(device)}
-        Interface: {hl(interface) if interface else 'N/A'}
+        Interface: {hl(configured_interface) if configured_interface else 'N/A'}
         """)
 
