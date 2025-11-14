@@ -319,21 +319,19 @@ class CreateExhibitorConnection(Job):
         self.logger.debug(f"Creating IP address from prefix {hl(prefix)} for circuit '{circuit_name}'")
         prefix_network = ip_network(str(prefix.prefix))
         self.logger.debug(f"Prefix network: {prefix_network}")
-
         ip_address_str = f"{prefix_network.network_address + 1}/{prefix.prefix_length}"
-        self.logger.debug(f"IP address string: {ip_address_str}")
-        self.logger.debug(f"Prefix length: {prefix.prefix_length}")
-        self.logger.debug(f"Prefix network address: {prefix_network.network_address}")
-        self.logger.debug(f"Prefix network address + 1: {prefix_network.network_address + 1}")
-        self.logger.debug(f"IP address string: {ip_address_str}")
 
+        self.logger.debug(f"Creating IP address: {ip_address_str}")
+        self.logger.debug(f"IP version: {prefix.ip_version}")
+        self.logger.debug(f"Status: {self.active_status}")
+        self.logger.debug(f"Description: {circuit_name}")
+        self.logger.debug(f"Tenant: {location.tenant}")
         # Create IP address
         ip_address = IPAddress.objects.create(
             address=ip_address_str,
             ip_version=prefix.ip_version,
             status=self.active_status,
             description=circuit_name,
-            dns_name=None,  # Will be set below
             tenant=location.tenant
         )
 
