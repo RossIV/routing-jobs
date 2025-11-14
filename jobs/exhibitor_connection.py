@@ -308,9 +308,6 @@ class CreateExhibitorConnection(Job):
         prefix_network = ip_network(str(prefix.prefix))
 
         ip_address_str = f"{prefix_network.network_address + 1}/{prefix.prefix_length}"
-        
-        # Get VRF
-        vrf = prefix.vrf if prefix.vrf else None
 
         # Create IP address
         ip_address = IPAddress.objects.create(
@@ -319,8 +316,7 @@ class CreateExhibitorConnection(Job):
             status=self.active_status,
             description=circuit_name,
             dns_name=None,  # Will be set below
-            tenant=location.tenant,
-            vrf=vrf,
+            tenant=location.tenant
         )
 
         # Set DNS name
