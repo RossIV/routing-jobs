@@ -3,7 +3,7 @@ from functools import lru_cache
 import re
 
 from nautobot.dcim.models import Device, Interface, Location
-from nautobot.circuits.models import Circuit, Provider, CircuitTermination
+from nautobot.circuits.models import Circuit, Provider, CircuitTermination, CircuitType
 from nautobot.ipam.models import Prefix, IPAddress, VRF
 from nautobot.extras.models import Status, Role, Relationship, RelationshipAssociation
 from nautobot.apps.jobs import Job, ObjectVar, StringVar, ChoiceVar, BooleanVar
@@ -140,6 +140,11 @@ class CreateExhibitorConnection(Job):
     def exhibitor_connection_role(self):
         return Role.objects.get(name="Exhibitor Connection (L3)")
 
+    @property
+    @lru_cache(maxsize=1)
+    def exhibitor_connection_circuit_type(self):
+        return CircuitType.objects.get(name="Exhibitor Connection")
+
     def _extract_booth_number(self, location_name):
         """Extract booth number from location name using regex."""
         match = re.search(r'(\d+)', location_name)
@@ -172,17 +177,13 @@ class CreateExhibitorConnection(Job):
         # Check for duplicates
         self._check_duplicate_circuit(circuit_name)
 
-        # Determine A-side rack from the device
-        device_rack = self._get_device_rack(device)
-
         # Create circuit
         circuit = Circuit.objects.create(
             cid=circuit_name,
             provider=self.scinet_provider,
-            type=None,  # Set if needed
             status=self.planned_status,
+            circuit_type=self.exhibitor_connection_circuit_type,
             tenant=location.tenant,
-            role=self.exhibitor_connection_role,
             commit_rate=speed,
             description=f"Exhibitor connection for {location.name}",
         )
