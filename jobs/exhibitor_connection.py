@@ -3,10 +3,11 @@ from functools import lru_cache
 import re
 
 from nautobot.dcim.models import Device, Interface, Location
+from nautobot.dcim.choices import InterfaceTypeChoices, InterfaceModeChoices
 from nautobot.circuits.models import Circuit, Provider, CircuitTermination, CircuitType
-from nautobot.ipam.models import Prefix, IPAddress, VRF
+from nautobot.ipam.models import Prefix, IPAddress, VRF, VLAN, Namespace
 from nautobot.extras.models import Status, Role, Relationship, RelationshipAssociation
-from nautobot.apps.jobs import Job, ObjectVar, StringVar, ChoiceVar, BooleanVar
+from nautobot.apps.jobs import Job, ObjectVar, StringVar, ChoiceVar, BooleanVar, IntegerVar
 from ipaddress import ip_network
 from django.contrib.contenttypes.models import ContentType
 
@@ -144,6 +145,11 @@ class CreateExhibitorConnection(Job):
     @lru_cache(maxsize=1)
     def exhibitor_connection_circuit_type(self):
         return CircuitType.objects.get(name="Exhibitor (L3)")
+
+    @property
+    @lru_cache(maxsize=1)
+    def global_namespace(self):
+        return Namespace.objects.get(name="Global")
 
     def _extract_booth_number(self, location_name):
         """Extract booth number from location name using regex."""
@@ -293,9 +299,29 @@ class CreateExhibitorConnection(Job):
         prefix.vrfs.set([target_vrf])
         self.logger.info(f"➕ Associated prefix {hl(prefix)} to VRF {hl(target_vrf)}")
 
-        # Associate prefix with circuit via custom relationship
+        self._relate_prefix_to_circuit(circuit, prefix)
+
+        self.logger.info(f"➕ Allocated prefix: {hl(prefix)}")
+        return prefix
+
+    def _get_target_vrf(self, connection_type, firewalled):
+        """Return the VRF to use based on connection type and firewall selection."""
+        if connection_type == "Exhibitor":
+            vrf_name = constants.EXHIBITOR_FIREWALLED_VRF if firewalled else constants.EXHIBITOR_UNFIREWALLED_VRF
+        elif connection_type == "NRE":
+            vrf_name = constants.NRE_VRF
+        else:
+            raise RuntimeError(f"Invalid connection type: {connection_type}")
+
+        self.logger.debug(f"Fetching VRF '{vrf_name}' for prefix allocation")
         try:
-            # TODO: This doesn't look like it'll work. Thanks, AI.
+            return VRF.objects.get(name=vrf_name)
+        except VRF.DoesNotExist:
+            raise RuntimeError(f"VRF '{vrf_name}' not found; cannot continue")
+
+    def _relate_prefix_to_circuit(self, circuit, prefix):
+        """Associate prefix to circuit via custom relationship."""
+        try:
             relationship = Relationship.objects.get(key='prefix')
             source_type = ContentType.objects.get_for_model(Circuit)
             destination_type = ContentType.objects.get_for_model(Prefix)
@@ -309,9 +335,6 @@ class CreateExhibitorConnection(Job):
             self.logger.info(f"➕ Related prefix {hl(prefix)} to circuit via relationship")
         except Exception as e:
             self.logger.warning(f"Could not relate prefix to circuit: {str(e)}")
-
-        self.logger.info(f"➕ Allocated prefix: {hl(prefix)}")
-        return prefix
 
     def _create_ip_address_from_prefix(self, prefix, circuit_name, location):
         """Create an IP address from the prefix (first host or ::1 for IPv6)."""
@@ -371,19 +394,7 @@ class CreateExhibitorConnection(Job):
         """Main execution method."""
         self.logger.info(f"🚀 Starting exhibitor connection creation for location: {hl(location)}")
 
-        target_vrf = None
-        if connection_type == "Exhibitor":
-            vrf_name = constants.EXHIBITOR_FIREWALLED_VRF if firewalled else constants.EXHIBITOR_UNFIREWALLED_VRF
-        elif connection_type == "NRE":
-            vrf_name = constants.NRE_VRF
-        else:
-            raise RuntimeError(f"Invalid connection type: {connection_type}")
-        
-        self.logger.debug(f"Fetching VRF '{vrf_name}' for prefix allocation")
-        try:
-            target_vrf = VRF.objects.get(name=vrf_name)
-        except VRF.DoesNotExist:
-            raise RuntimeError(f"VRF '{vrf_name}' not found; cannot continue")
+        target_vrf = self._get_target_vrf(connection_type, firewalled)
 
         # Step 1: Create circuit
         circuit = self._create_circuit(location, device, connection_identifier, speed)
@@ -440,3 +451,271 @@ class CreateExhibitorConnection(Job):
         Interface: {hl(configured_interface) if configured_interface else 'N/A'}
         """)
 
+
+class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
+    """
+    Create an exhibitor connection where routing and switching functions live on separate devices.
+    """
+
+    location = ObjectVar(
+        description="Location (Booth) for the connection",
+        required=True,
+        model=Location,
+        display_field="name",
+        query_params={
+            "tenant__isnull": False,
+        },
+    )
+
+    connection_identifier = ChoiceVar(
+        choices=[(chr(i), chr(i)) for i in range(ord('A'), ord('Z') + 1)],
+        required=True,
+    )
+
+    ipv4_prefix_input = StringVar(
+        description="IPv4 prefix to assign (e.g., 192.0.2.0/30)",
+        required=False,
+    )
+
+    ipv6_prefix_input = StringVar(
+        description="IPv6 prefix to assign (e.g., 2001:db8::/64)",
+        required=False,
+    )
+
+    router_device = ObjectVar(
+        description="Router device that will host the routed subinterface",
+        required=True,
+        model=Device,
+        display_field="name",
+        query_params={
+            "role": ["DNOC Switch", "NOC Router", "SCN Router"]
+        },
+    )
+
+    router_interface = ObjectVar(
+        description="Parent interface on the router device",
+        required=True,
+        model=Interface,
+        display_field="name",
+        query_params={
+            "device_id": "$router_device",
+        },
+    )
+
+    router_subinterface_id = IntegerVar(
+        description="Numeric identifier used for the new router subinterface and VLAN",
+        required=True,
+    )
+
+    switch_device = ObjectVar(
+        description="Switch device that connects to the exhibitor equipment",
+        required=True,
+        model=Device,
+        display_field="name",
+        query_params={
+            "role": ["DNOC Switch", "NOC Router", "SCN Router"]
+        },
+    )
+
+    switch_interface = ObjectVar(
+        description="Switch interface that connects to the exhibitor equipment",
+        required=True,
+        model=Interface,
+        display_field="name",
+        query_params={
+            "device_id": "$switch_device",
+        },
+    )
+
+    speed = ChoiceVar(
+        choices=[
+            (1000000, "1 Gbps"),
+            (10000000, "10 Gbps"),
+            (100000000, "100 Gbps"),
+            (400000000, "400 Gbps"),
+        ],
+        description="Connection speed",
+        required=True,
+    )
+
+    connection_type = ChoiceVar(
+        choices=[
+            ("Exhibitor", "Exhibitor"),
+            ("NRE", "NRE"),
+        ],
+        description="Connection type",
+        required=True,
+    )
+
+    firewalled = BooleanVar(
+        description="Firewalled connection",
+        required=True,
+        default=True,
+    )
+
+    class Meta:
+        name = "Create Exhibitor Connection (Split Route/Switch)"
+        description = "Create an exhibitor connection where routing and switching functions live on separate devices."
+        has_sensitive_variables = False
+
+    def _get_or_create_manual_prefix(self, prefix_input, expected_version, circuit, location, target_vrf):
+        """Create a prefix object from user-provided input."""
+        cleaned_input = (prefix_input or "").strip()
+        if not cleaned_input:
+            return None
+
+        try:
+            network = ip_network(cleaned_input, strict=True)
+        except ValueError as exc:
+            raise RuntimeError(f"Invalid IPv{expected_version} prefix '{cleaned_input}': {exc}")
+
+        if network.version != expected_version:
+            raise RuntimeError(f"Provided prefix '{cleaned_input}' is IPv{network.version}, expected IPv{expected_version}")
+
+        canonical_prefix = str(network)
+        if Prefix.objects.filter(prefix=canonical_prefix).exists():
+            raise RuntimeError(f"Prefix {canonical_prefix} already exists in Nautobot")
+
+        prefix = Prefix(
+            type="network",
+            prefix=canonical_prefix,
+            ip_version=network.version,
+            status=self.active_status,
+            role=self.exhibitor_connection_role,
+            description=circuit.cid,
+            tenant=location.tenant,
+            namespace=self.global_namespace,
+        )
+        prefix.save()
+        prefix.vrfs.set([target_vrf])
+        self._relate_prefix_to_circuit(circuit, prefix)
+        self.logger.info(f"➕ Created manual prefix {hl(prefix)}")
+        return prefix
+
+    def _get_vlan(self, vlan_id):
+        """Validate VLAN existence."""
+        vlan = VLAN.objects.filter(vid=vlan_id).first()
+        if not vlan:
+            raise RuntimeError(f"VLAN with ID {vlan_id} does not exist in Nautobot")
+        return vlan
+
+    def _create_router_subinterface(self, router_device, parent_interface, subinterface_id, circuit_name, location, vlan):
+        """Create the router subinterface used for routed connectivity."""
+        if parent_interface.device_id != router_device.id:
+            raise RuntimeError(f"Interface {hl(parent_interface)} is not on router device {hl(router_device)}")
+
+        subinterface_name = f"{parent_interface.name}.{subinterface_id}"
+        existing = Interface.objects.filter(device=router_device, name=subinterface_name).first()
+        if existing:
+            raise RuntimeError(f"Subinterface {subinterface_name} already exists on device {hl(router_device)}")
+
+        subinterface = Interface.objects.create(
+            device=router_device,
+            name=subinterface_name,
+            parent=parent_interface,
+            type=InterfaceTypeChoices.TYPE_VIRTUAL,
+            status=self.planned_status,
+            description=f"{circuit_name}: {location.tenant.name if location.tenant else 'Unknown'}",
+        )
+        subinterface.tagged_vlans.set([vlan])
+        self.logger.info(f"➕ Created router subinterface {hl(subinterface)} tagged for VLAN {hl(vlan)}")
+        return subinterface
+
+    def _configure_switch_customer_interface(self, switch_device, interface, circuit_name, location, vlan):
+        """Configure the switch-facing interface for the exhibitor."""
+        if interface.device_id != switch_device.id:
+            raise RuntimeError(f"Interface {hl(interface)} is not on switch device {hl(switch_device)}")
+
+        interface.description = f"{circuit_name}: {location.tenant.name if location.tenant else 'Unknown'}"
+        interface.mode = InterfaceModeChoices.MODE_ACCESS
+        interface.untagged_vlan = vlan
+        interface.tagged_vlans.clear()
+        interface.save()
+
+        self.logger.info(f"✅ Configured switch interface {hl(interface)} as access with VLAN {hl(vlan)}")
+        return interface
+
+    @transaction.atomic
+    def run(
+        self,
+        location,
+        connection_identifier,
+        ipv4_prefix_input,
+        ipv6_prefix_input,
+        router_device,
+        router_interface,
+        router_subinterface_id,
+        switch_device,
+        switch_interface,
+        speed,
+        connection_type,
+        firewalled,
+    ):
+        """Main execution method for split router/switch connections."""
+        self.logger.info(f"🚀 Starting split exhibitor connection creation for location: {hl(location)}")
+
+        if not (ipv4_prefix_input or ipv6_prefix_input):
+            raise RuntimeError("You must provide at least one IPv4 or IPv6 prefix")
+
+        target_vrf = self._get_target_vrf(connection_type, firewalled)
+        vlan = self._get_vlan(router_subinterface_id)
+
+        circuit = self._create_circuit(location, router_device, connection_identifier, speed)
+
+        prefixes = []
+        if ipv4_prefix_input:
+            prefix_ipv4 = self._get_or_create_manual_prefix(ipv4_prefix_input, 4, circuit, location, target_vrf)
+            if prefix_ipv4:
+                prefixes.append(prefix_ipv4)
+
+        if ipv6_prefix_input:
+            prefix_ipv6 = self._get_or_create_manual_prefix(ipv6_prefix_input, 6, circuit, location, target_vrf)
+            if prefix_ipv6:
+                prefixes.append(prefix_ipv6)
+
+        if not prefixes:
+            raise RuntimeError("No prefixes were created; cannot continue")
+
+        ip_addresses = []
+        for prefix in prefixes:
+            ip_addr = self._create_ip_address_from_prefix(prefix, circuit.cid, location)
+            ip_addresses.append(ip_addr)
+
+        router_subinterface = self._create_router_subinterface(
+            router_device,
+            router_interface,
+            router_subinterface_id,
+            circuit.cid,
+            location,
+            vlan,
+        )
+
+        configured_router_interface = self._configure_interface(
+            router_subinterface,
+            ip_addresses,
+            circuit.cid,
+            location,
+            target_vrf,
+        )
+
+        configured_switch_interface = self._configure_switch_customer_interface(
+            switch_device,
+            switch_interface,
+            circuit.cid,
+            location,
+            vlan,
+        )
+
+        self.logger.info(f"""
+        ✅ Split exhibitor connection creation completed:
+        
+        Circuit: {hl(circuit)}
+        Location: {hl(location)}
+        Prefixes: {[hl(p) for p in prefixes]}
+        IP Addresses: {[hl(ip) for ip in ip_addresses]}
+        Router Device: {hl(router_device)}
+        Router Interface: {hl(configured_router_interface)}
+        Switch Device: {hl(switch_device)}
+        Switch Interface: {hl(configured_switch_interface)}
+        VLAN: {hl(vlan)}
+        """)
