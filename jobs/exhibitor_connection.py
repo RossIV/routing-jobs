@@ -457,6 +457,13 @@ class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
     Create an exhibitor connection where routing and switching functions live on separate devices.
     """
 
+    # Disable base job inputs that aren't used in this split workflow
+    ipv4_enabled = None
+    ipv6_enabled = None
+    subnet_size_ipv4 = None
+    device = None
+    interface = None
+
     location = ObjectVar(
         description="Location (Booth) for the connection",
         required=True,
