@@ -254,15 +254,18 @@ class CreateExhibitorConnection(Job):
 
         raise RuntimeError(f"No available /{prefix_length} prefix in container {container_prefix.prefix}")
 
-    def _allocate_prefix(self, circuit, location, ip_version, prefix_length, connection_type, firewalled):
+    def _allocate_prefix(self, circuit, location, ip_version, prefix_length, connection_type, target_vrf):
         """Allocate a new prefix for the circuit."""
         # Only allocate if connection type is Exhibitor
         if connection_type != "Exhibitor":
             self.logger.debug(f"Skipping prefix allocation for connection type '{connection_type}'")
             return None
 
+        if not target_vrf:
+            raise RuntimeError("Target VRF must be provided for Exhibitor connections")
+
         self.logger.debug(f"Allocating IPv{ip_version} /{prefix_length} prefix "
-                          f"for circuit {hl(circuit)} (firewalled={firewalled})")
+                          f"for circuit {hl(circuit)} using VRF {hl(target_vrf)}")
         # Find container prefix
         container_prefix = self._find_container_prefix(ip_version, connection_type)
         
@@ -287,12 +290,8 @@ class CreateExhibitorConnection(Job):
         prefix.save()
 
         # Associate prefix with VRF
-        target_vrf = "exhibitor" if firewalled else "dmz"
-        vrf = VRF.objects.get(name=target_vrf)
-        if not vrf:
-            raise RuntimeError(f"VRF {target_vrf} not found")
-        prefix.vrfs.set([vrf])
-        self.logger.info(f"➕ Associated prefix {hl(prefix)} to VRF {target_vrf}")
+        prefix.vrfs.set([target_vrf])
+        self.logger.info(f"➕ Associated prefix {hl(prefix)} to VRF {hl(target_vrf)}")
 
         # Associate prefix with circuit via custom relationship
         try:
@@ -348,11 +347,10 @@ class CreateExhibitorConnection(Job):
         self.logger.info(f"➕ Created IP address: {hl(ip_address)}")
         return ip_address
 
-    def _configure_interface(self, interface, ip_addresses, circuit_name, location):
+    def _configure_interface(self, interface, ip_addresses, circuit_name, location, vrf):
         """Configure interface with IP addresses and description."""
         self.logger.debug(f"Configuring interface {hl(interface)} with {len(ip_addresses)} IP(s) for circuit '{circuit_name}'")
-        # Get VRF from first IP address
-        vrf = ip_addresses[0].vrf if ip_addresses and ip_addresses[0].vrf else None
+        self.logger.debug(f"Setting interface VRF to {hl(vrf) if vrf else 'None'} based on prefix configuration")
         
         # Set description
         interface.description = f"{circuit_name}: {location.tenant.name if location.tenant else 'Unknown'}"
@@ -373,19 +371,37 @@ class CreateExhibitorConnection(Job):
         """Main execution method."""
         self.logger.info(f"🚀 Starting exhibitor connection creation for location: {hl(location)}")
 
+        target_vrf = None
+        if connection_type == "Exhibitor":
+            vrf_name = constants.EXHIBITOR_FIREWALLED_VRF if firewalled else constants.EXHIBITOR_UNFIREWALLED_VRF
+        elif connection_type == "NRE":
+            vrf_name = constants.NRE_VRF
+        else:
+            raise RuntimeError(f"Invalid connection type: {connection_type}")
+        
+        self.logger.debug(f"Fetching VRF '{vrf_name}' for prefix allocation")
+        try:
+            target_vrf = VRF.objects.get(name=vrf_name)
+        except VRF.DoesNotExist:
+            raise RuntimeError(f"VRF '{vrf_name}' not found; cannot continue")
+
         # Step 1: Create circuit
         circuit = self._create_circuit(location, device, connection_identifier, speed)
         
         # Step 2: Allocate prefixes
         prefixes = []
         if ipv4_enabled and connection_type == "Exhibitor":
-            prefix_ipv4 = self._allocate_prefix(circuit, location, 4, int(subnet_size_ipv4), connection_type, firewalled)
+            prefix_ipv4 = self._allocate_prefix(
+                circuit, location, 4, int(subnet_size_ipv4), connection_type, target_vrf
+            )
             if prefix_ipv4:
                 prefixes.append(prefix_ipv4)
         
         if ipv6_enabled and connection_type == "Exhibitor":
             # Default IPv6 prefix length (typically /64 for LANs)
-            prefix_ipv6 = self._allocate_prefix(circuit, location, 6, 64, connection_type, firewalled)
+            prefix_ipv6 = self._allocate_prefix(
+                circuit, location, 6, 64, connection_type, target_vrf
+            )
             if prefix_ipv6:
                 prefixes.append(prefix_ipv6)
 
@@ -403,7 +419,14 @@ class CreateExhibitorConnection(Job):
         if ip_addresses:
             if interface.device_id != device.id:
                 raise RuntimeError(f"Selected interface {hl(interface)} does not belong to device {hl(device)}")
-            configured_interface = self._configure_interface(interface, ip_addresses, circuit.cid, location)
+
+            prefix_vrf = None
+            if prefixes:
+                prefix_vrf = prefixes[0].vrfs.first()
+                if not prefix_vrf:
+                    self.logger.warning(f"No VRF associated with prefix {hl(prefixes[0])}; interface VRF will be left unset")
+
+            configured_interface = self._configure_interface(interface, ip_addresses, circuit.cid, location, prefix_vrf)
 
         # Summary
         self.logger.info(f"""
