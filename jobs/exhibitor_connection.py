@@ -143,7 +143,7 @@ class CreateExhibitorConnection(Job):
     @property
     @lru_cache(maxsize=1)
     def exhibitor_connection_circuit_type(self):
-        return CircuitType.objects.get(name="Exhibitor Connection")
+        return CircuitType.objects.get(name="Exhibitor (L3)")
 
     def _extract_booth_number(self, location_name):
         """Extract booth number from location name using regex."""
