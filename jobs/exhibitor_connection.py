@@ -175,7 +175,7 @@ class CreateExhibitorConnection(Job):
         self.logger.debug(f"Checking for duplicate circuit with CID '{circuit_name}'")
         existing_circuit = Circuit.objects.filter(cid=circuit_name).first()
         if existing_circuit:
-            termination_count = existing_circuit.terminations.count()
+            termination_count = CircuitTermination.objects.filter(circuit=existing_circuit).count()
             self.logger.debug(f"Found existing circuit {hl(existing_circuit)} with {termination_count} termination(s)")
             if termination_count > 0:
                 raise RuntimeError(f"Circuit with CID '{circuit_name}' already exists with terminations: {hl(existing_circuit)}")
