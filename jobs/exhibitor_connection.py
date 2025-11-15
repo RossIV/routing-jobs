@@ -797,7 +797,7 @@ class CreateExhibitorConnectionSplitBulk(CreateExhibitorConnectionSplit):
     )
 
     class Meta:
-        name = "Create Exhibitor Connection (Split Route/Switch, CSV Batch)"
+        name = "Bulk Create Exhibitor Connection (Split Route/Switch)"
         description = "Create multiple split exhibitor connections from a CSV file."
         has_sensitive_variables = False
 
