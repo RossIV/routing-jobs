@@ -567,6 +567,9 @@ class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
 
     def _get_or_create_manual_prefix(self, prefix_input, expected_version, circuit, location, target_vrf):
         """Create a prefix object from user-provided input."""
+        self.logger.debug(
+            f"Processing manual IPv{expected_version} prefix input '{prefix_input}' for circuit {hl(circuit)}"
+        )
         cleaned_input = (prefix_input or "").strip()
         if not cleaned_input:
             return None
@@ -601,6 +604,7 @@ class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
 
     def _get_vlan(self, vlan_id):
         """Validate VLAN existence."""
+        self.logger.debug(f"Looking up VLAN ID {vlan_id}")
         vlan = VLAN.objects.filter(vid=vlan_id).first()
         if not vlan:
             raise RuntimeError(f"VLAN with ID {vlan_id} does not exist in Nautobot")
@@ -608,6 +612,10 @@ class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
 
     def _create_router_subinterface(self, router_device, parent_interface, subinterface_id, circuit_name, location, vlan):
         """Create the router subinterface used for routed connectivity."""
+        self.logger.debug(
+            f"Creating router subinterface on {hl(router_device)} parent={hl(parent_interface)} "
+            f"id={subinterface_id} for circuit '{circuit_name}'"
+        )
         if parent_interface.device_id != router_device.id:
             raise RuntimeError(f"Interface {hl(parent_interface)} is not on router device {hl(router_device)}")
 
@@ -630,6 +638,10 @@ class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
 
     def _configure_switch_customer_interface(self, switch_device, interface, circuit_name, location, vlan):
         """Configure the switch-facing interface for the exhibitor."""
+        self.logger.debug(
+            f"Configuring switch interface {hl(interface)} on device {hl(switch_device)} "
+            f"as access for VLAN {hl(vlan)}"
+        )
         if interface.device_id != switch_device.id:
             raise RuntimeError(f"Interface {hl(interface)} is not on switch device {hl(switch_device)}")
 
