@@ -619,7 +619,7 @@ class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
         subinterface = Interface.objects.create(
             device=router_device,
             name=subinterface_name,
-            parent=parent_interface,
+            parent_interface=parent_interface,
             type=InterfaceTypeChoices.TYPE_VIRTUAL,
             status=self.planned_status,
             description=f"{circuit_name}: {location.tenant.name if location.tenant else 'Unknown'}",
