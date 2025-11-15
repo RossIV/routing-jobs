@@ -168,11 +168,20 @@ class CreateExhibitorConnection(Job):
         return f"{booth_number}-{connection_identifier}"
 
     def _check_duplicate_circuit(self, circuit_name):
-        """Check if a circuit with the same name already exists."""
+        """Check if a circuit with the same name already exists.
+        Returns the existing circuit if it has no terminations, None if it doesn't exist,
+        or raises RuntimeError if it exists with terminations.
+        """
         self.logger.debug(f"Checking for duplicate circuit with CID '{circuit_name}'")
         existing_circuit = Circuit.objects.filter(cid=circuit_name).first()
         if existing_circuit:
-            raise RuntimeError(f"Circuit with CID '{circuit_name}' already exists: {hl(existing_circuit)}")
+            termination_count = existing_circuit.terminations.count()
+            self.logger.debug(f"Found existing circuit {hl(existing_circuit)} with {termination_count} termination(s)")
+            if termination_count > 0:
+                raise RuntimeError(f"Circuit with CID '{circuit_name}' already exists with terminations: {hl(existing_circuit)}")
+            self.logger.info(f"Found existing circuit {hl(existing_circuit)} with no terminations; will reuse and update")
+            return existing_circuit
+        return None
 
     def _get_device_rack(self, device):
         """Return the rack associated with the provided device."""
@@ -182,44 +191,63 @@ class CreateExhibitorConnection(Job):
         return rack
 
     def _create_circuit(self, location, device, connection_identifier, speed):
-        """Create a circuit for the exhibitor connection."""
+        """Create or update a circuit for the exhibitor connection."""
         self.logger.debug(f"Creating circuit for location {hl(location)} on device {hl(device)} "
                           f"with identifier '{connection_identifier}' and speed '{speed}'")
         booth_number = self._extract_booth_number(location.name)
         circuit_name = self._generate_circuit_name(booth_number, connection_identifier)
 
-        # Check for duplicates
-        self._check_duplicate_circuit(circuit_name)
+        # Check for existing circuit without terminations
+        existing_circuit = self._check_duplicate_circuit(circuit_name)
+        
+        if existing_circuit:
+            # Update existing circuit
+            circuit = existing_circuit
+            circuit.provider = self.scinet_provider
+            circuit.status = self.planned_status
+            circuit.circuit_type = self.exhibitor_connection_circuit_type
+            circuit.tenant = location.tenant
+            circuit.commit_rate = speed
+            circuit.description = f"Exhibitor connection for {location.name}"
+            circuit.save()
+            self.logger.info(f"🔄 Updated existing circuit: {hl(circuit)}")
+        else:
+            # Create new circuit
+            circuit = Circuit.objects.create(
+                cid=circuit_name,
+                provider=self.scinet_provider,
+                status=self.planned_status,
+                circuit_type=self.exhibitor_connection_circuit_type,
+                tenant=location.tenant,
+                commit_rate=speed,
+                description=f"Exhibitor connection for {location.name}",
+            )
+            self.logger.info(f"➕ Created circuit: {hl(circuit)}")
 
-        # Create circuit
-        circuit = Circuit.objects.create(
-            cid=circuit_name,
-            provider=self.scinet_provider,
-            status=self.planned_status,
-            circuit_type=self.exhibitor_connection_circuit_type,
-            tenant=location.tenant,
-            commit_rate=speed,
-            description=f"Exhibitor connection for {location.name}",
-        )
-
-        self.logger.info(f"➕ Created circuit: {hl(circuit)}")
-
-        # Create terminations
+        # Create terminations if they don't already exist
         # A Side: Device location
-        CircuitTermination.objects.create(
-            circuit=circuit,
-            term_side='A',
-            location=device.location,
-        )
+        a_termination = CircuitTermination.objects.filter(circuit=circuit, term_side='A').first()
+        if not a_termination:
+            CircuitTermination.objects.create(
+                circuit=circuit,
+                term_side='A',
+                location=device.location,
+            )
+            self.logger.info(f"➕ Created A-side termination: {hl(device.location)}")
+        else:
+            self.logger.debug(f"A-side termination already exists: {hl(a_termination)}")
 
         # Z Side: Booth location
-        CircuitTermination.objects.create(
-            circuit=circuit,
-            term_side='Z',
-            location=location,
-        )
-
-        self.logger.info(f"➕ Created circuit terminations: A-side={hl(device.location)}, Z-side location={hl(location)}")
+        z_termination = CircuitTermination.objects.filter(circuit=circuit, term_side='Z').first()
+        if not z_termination:
+            CircuitTermination.objects.create(
+                circuit=circuit,
+                term_side='Z',
+                location=location,
+            )
+            self.logger.info(f"➕ Created Z-side termination: {hl(location)}")
+        else:
+            self.logger.debug(f"Z-side termination already exists: {hl(z_termination)}")
 
         return circuit
 
