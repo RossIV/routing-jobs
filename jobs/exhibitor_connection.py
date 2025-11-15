@@ -204,7 +204,7 @@ class CreateExhibitorConnection(Job):
             # Update existing circuit
             circuit = existing_circuit
             circuit.provider = self.scinet_provider
-            circuit.status = self.planned_status
+            circuit.status = self.active_status
             circuit.circuit_type = self.exhibitor_connection_circuit_type
             circuit.tenant = location.tenant
             circuit.commit_rate = speed
@@ -216,7 +216,7 @@ class CreateExhibitorConnection(Job):
             circuit = Circuit.objects.create(
                 cid=circuit_name,
                 provider=self.scinet_provider,
-                status=self.planned_status,
+                status=self.active_status,
                 circuit_type=self.exhibitor_connection_circuit_type,
                 tenant=location.tenant,
                 commit_rate=speed,
@@ -659,7 +659,8 @@ class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
             name=subinterface_name,
             parent_interface=parent_interface,
             type=InterfaceTypeChoices.TYPE_VIRTUAL,
-            status=self.planned_status,
+            status=self.active_status,
+            role=self.exhibitor_connection_role,
             description=f"{circuit_name}: {location.tenant.name if location.tenant else 'Unknown'}",
         )
         self.logger.info(f"➕ Created router subinterface {hl(subinterface)} tagged for VLAN {hl(vlan)}")
