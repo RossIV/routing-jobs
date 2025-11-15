@@ -3,7 +3,11 @@
 from nautobot.core.celery import register_jobs
 
 from .management_interfaces import CreateManagementInterface, ConfigureExistingInterfaceForManagement
-from .exhibitor_connection import CreateExhibitorConnection, CreateExhibitorConnectionSplit
+from .exhibitor_connection import (
+    CreateExhibitorConnection,
+    CreateExhibitorConnectionSplit,
+    CreateExhibitorConnectionSplitBulk,
+)
 from .loopback_interfaces import CreateLoopbackInterface, BulkCreateLoopbackInterfaces
 
 jobs = [
@@ -11,6 +15,7 @@ jobs = [
     ConfigureExistingInterfaceForManagement,
     CreateExhibitorConnection,
     CreateExhibitorConnectionSplit,
+    CreateExhibitorConnectionSplitBulk,
     CreateLoopbackInterface,
     BulkCreateLoopbackInterfaces
 ]

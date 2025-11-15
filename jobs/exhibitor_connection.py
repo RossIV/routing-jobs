@@ -1,13 +1,15 @@
 from django.db import transaction
 from functools import lru_cache
 import re
+import csv
+from io import StringIO
 
 from nautobot.dcim.models import Device, Interface, Location
 from nautobot.dcim.choices import InterfaceTypeChoices, InterfaceModeChoices
 from nautobot.circuits.models import Circuit, Provider, CircuitTermination, CircuitType
 from nautobot.ipam.models import Prefix, IPAddress, VRF, VLAN, Namespace
 from nautobot.extras.models import Status, Role, Relationship, RelationshipAssociation
-from nautobot.apps.jobs import Job, ObjectVar, StringVar, ChoiceVar, BooleanVar, IntegerVar
+from nautobot.apps.jobs import Job, ObjectVar, StringVar, ChoiceVar, BooleanVar, IntegerVar, FileVar
 from ipaddress import ip_network
 from django.contrib.contenttypes.models import ContentType
 
@@ -653,8 +655,7 @@ class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
         self.logger.info(f"✅ Configured switch interface {hl(interface)} as access with VLAN {hl(vlan)}")
         return interface
 
-    @transaction.atomic
-    def run(
+    def _execute_split_connection(
         self,
         location,
         connection_identifier,
@@ -669,9 +670,6 @@ class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
         connection_type,
         firewalled,
     ):
-        """Main execution method for split router/switch connections."""
-        self.logger.info(f"🚀 Starting split exhibitor connection creation for location: {hl(location)}")
-
         if not (ipv4_prefix_input or ipv6_prefix_input):
             raise RuntimeError("You must provide at least one IPv4 or IPv6 prefix")
 
@@ -737,3 +735,212 @@ class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
         Switch Interface: {hl(configured_switch_interface)}
         VLAN: {hl(vlan)}
         """)
+
+        return {
+            "circuit": circuit,
+            "prefixes": prefixes,
+            "ip_addresses": ip_addresses,
+            "router_interface": configured_router_interface,
+            "switch_interface": configured_switch_interface,
+            "vlan": vlan,
+        }
+
+    @transaction.atomic
+    def run(
+        self,
+        location,
+        connection_identifier,
+        ipv4_prefix_input,
+        ipv6_prefix_input,
+        router_device,
+        router_interface,
+        router_subinterface_id,
+        switch_device,
+        switch_interface,
+        speed,
+        connection_type,
+        firewalled,
+    ):
+        """Main execution method for split router/switch connections."""
+        self.logger.info(f"🚀 Starting split exhibitor connection creation for location: {hl(location)}")
+
+        if not (ipv4_prefix_input or ipv6_prefix_input):
+            raise RuntimeError("You must provide at least one IPv4 or IPv6 prefix")
+
+        self._execute_split_connection(
+            location,
+            connection_identifier,
+            ipv4_prefix_input,
+            ipv6_prefix_input,
+            router_device,
+            router_interface,
+            router_subinterface_id,
+            switch_device,
+            switch_interface,
+            speed,
+            connection_type,
+            firewalled,
+        )
+
+
+class CreateExhibitorConnectionSplitBulk(CreateExhibitorConnectionSplit):
+    """Batch create split exhibitor connections via CSV input."""
+
+    csv_file = FileVar(
+        description=(
+            "CSV file containing split exhibitor connection definitions. "
+            "Required columns: location, connection_identifier, ipv4_prefix, ipv6_prefix, "
+            "router_device, router_interface, router_subinterface_id, switch_device, switch_interface, "
+            "speed_kbps, connection_type, firewalled"
+        ),
+        required=True,
+    )
+
+    class Meta:
+        name = "Create Exhibitor Connection (Split Route/Switch, CSV Batch)"
+        description = "Create multiple split exhibitor connections from a CSV file."
+        has_sensitive_variables = False
+
+    REQUIRED_COLUMNS = [
+        "location",
+        "connection_identifier",
+        "ipv4_prefix",
+        "ipv6_prefix",
+        "router_device",
+        "router_interface",
+        "router_subinterface_id",
+        "switch_device",
+        "switch_interface",
+        "speed_kbps",
+        "connection_type",
+        "firewalled",
+    ]
+
+    def _parse_bool(self, value, field_name):
+        if isinstance(value, bool):
+            return value
+        value = (value or "").strip().lower()
+        if value in {"true", "1", "yes", "y"}:
+            return True
+        if value in {"false", "0", "no", "n"}:
+            return False
+        raise RuntimeError(f"Invalid boolean value '{value}' for column '{field_name}'")
+
+    def _parse_int(self, value, field_name):
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            raise RuntimeError(f"Column '{field_name}' must be an integer (received '{value}')")
+
+    def _get_device_by_name(self, name, field_name):
+        if not name:
+            raise RuntimeError(f"Column '{field_name}' is required")
+        try:
+            return Device.objects.get(name=name.strip())
+        except Device.DoesNotExist:
+            raise RuntimeError(f"Device '{name}' (from column '{field_name}') not found")
+
+    def _get_location_by_name(self, name):
+        if not name:
+            raise RuntimeError("Column 'location' is required")
+        try:
+            return Location.objects.get(name=name.strip())
+        except Location.DoesNotExist:
+            raise RuntimeError(f"Location '{name}' not found")
+
+    def _get_interface(self, device, interface_name, field_name):
+        if not interface_name:
+            raise RuntimeError(f"Column '{field_name}' is required")
+        try:
+            return Interface.objects.get(device=device, name=interface_name.strip())
+        except Interface.DoesNotExist:
+            raise RuntimeError(
+                f"Interface '{interface_name}' (from column '{field_name}') not found on device {hl(device)}"
+            )
+
+    def _deserialize_row(self, row, row_number):
+        """Convert a CSV row to arguments for split execution."""
+        location = self._get_location_by_name(row.get("location"))
+        connection_identifier = (row.get("connection_identifier") or "").strip().upper()
+        valid_identifiers = {choice[0] for choice in CreateExhibitorConnection.connection_identifier.choices}
+        if connection_identifier not in valid_identifiers:
+            raise RuntimeError(
+                f"Row {row_number}: Invalid connection identifier '{connection_identifier}'. Must be A-Z."
+            )
+
+        ipv4_prefix_input = (row.get("ipv4_prefix") or "").strip()
+        ipv6_prefix_input = (row.get("ipv6_prefix") or "").strip()
+
+        router_device = self._get_device_by_name(row.get("router_device"), "router_device")
+        router_interface = self._get_interface(router_device, row.get("router_interface"), "router_interface")
+        router_subinterface_id = self._parse_int(row.get("router_subinterface_id"), "router_subinterface_id")
+
+        switch_device = self._get_device_by_name(row.get("switch_device"), "switch_device")
+        switch_interface = self._get_interface(switch_device, row.get("switch_interface"), "switch_interface")
+
+        speed = self._parse_int(row.get("speed_kbps"), "speed_kbps")
+        valid_speeds = {choice[0] for choice in CreateExhibitorConnection.speed.choices}
+        if speed not in valid_speeds:
+            raise RuntimeError(f"Row {row_number}: Speed '{speed}' not in allowed values {sorted(valid_speeds)}")
+
+        connection_type = (row.get("connection_type") or "").strip()
+        valid_connection_types = {choice[0] for choice in self.connection_type.choices}
+        if connection_type not in valid_connection_types:
+            raise RuntimeError(
+                f"Row {row_number}: Connection type '{connection_type}' invalid. "
+                f"Valid: {sorted(valid_connection_types)}"
+            )
+
+        firewalled = self._parse_bool(row.get("firewalled"), "firewalled")
+
+        return {
+            "location": location,
+            "connection_identifier": connection_identifier,
+            "ipv4_prefix_input": ipv4_prefix_input,
+            "ipv6_prefix_input": ipv6_prefix_input,
+            "router_device": router_device,
+            "router_interface": router_interface,
+            "router_subinterface_id": router_subinterface_id,
+            "switch_device": switch_device,
+            "switch_interface": switch_interface,
+            "speed": speed,
+            "connection_type": connection_type,
+            "firewalled": firewalled,
+        }
+
+    def _read_csv(self, csv_file):
+        content = csv_file.read()
+        if isinstance(content, bytes):
+            content = content.decode("utf-8-sig")
+        elif hasattr(content, "decode"):
+            content = content.decode("utf-8-sig")
+        return csv.DictReader(StringIO(content))
+
+    def run(self, csv_file):
+        """Process all rows in the provided CSV file."""
+        reader = self._read_csv(csv_file)
+        if not reader.fieldnames:
+            raise RuntimeError("CSV file is empty or missing a header row")
+
+        missing_columns = set(self.REQUIRED_COLUMNS) - {fn.strip() for fn in reader.fieldnames}
+        if missing_columns:
+            raise RuntimeError(f"CSV missing required columns: {', '.join(sorted(missing_columns))}")
+
+        successes = 0
+        failures = 0
+        for row_number, row in enumerate(reader, start=2):
+            if not any((value or "").strip() for value in row.values()):
+                continue  # Skip blank lines
+
+            try:
+                params = self._deserialize_row(row, row_number)
+                with transaction.atomic():
+                    self._execute_split_connection(**params)
+                successes += 1
+            except Exception as exc:
+                failures += 1
+                self.logger.error(f"Row {row_number}: {exc}")
+
+        self.logger.info(f"CSV processing complete. Successes: {successes}, Failures: {failures}")
+        if failures:
+            raise RuntimeError(f"Completed with {successes} successful rows and {failures} failed rows")
