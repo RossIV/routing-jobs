@@ -786,6 +786,20 @@ class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
 class CreateExhibitorConnectionSplitBulk(CreateExhibitorConnectionSplit):
     """Batch create split exhibitor connections via CSV input."""
 
+    # Disable all inherited input fields - CSV file is the only input needed
+    location = None
+    connection_identifier = None
+    ipv4_prefix_input = None
+    ipv6_prefix_input = None
+    router_device = None
+    router_interface = None
+    router_subinterface_id = None
+    switch_device = None
+    switch_interface = None
+    speed = None
+    connection_type = None
+    firewalled = None
+
     csv_file = FileVar(
         description=(
             "CSV file containing split exhibitor connection definitions. "
