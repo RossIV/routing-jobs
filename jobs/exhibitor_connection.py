@@ -632,7 +632,6 @@ class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
             status=self.planned_status,
             description=f"{circuit_name}: {location.tenant.name if location.tenant else 'Unknown'}",
         )
-        subinterface.tagged_vlans.set([vlan])
         self.logger.info(f"➕ Created router subinterface {hl(subinterface)} tagged for VLAN {hl(vlan)}")
         return subinterface
 
