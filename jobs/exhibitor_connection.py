@@ -927,7 +927,7 @@ class CreateExhibitorConnectionSplitBulk(CreateExhibitorConnectionSplit):
             raise RuntimeError(f"Row {row_number}: Speed '{speed}' not in allowed values {sorted(valid_speeds)}")
 
         connection_type = (row.get("connection_type") or "").strip()
-        valid_connection_types = {choice[0] for choice in CreateExhibitorConnectionSplit.connection_type.choices}
+        valid_connection_types = {"Exhibitor", "NRE"}
         if connection_type not in valid_connection_types:
             raise RuntimeError(
                 f"Row {row_number}: Connection type '{connection_type}' invalid. "
