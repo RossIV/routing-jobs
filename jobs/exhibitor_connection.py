@@ -904,7 +904,8 @@ class CreateExhibitorConnectionSplitBulk(CreateExhibitorConnectionSplit):
         """Convert a CSV row to arguments for split execution."""
         location = self._get_location_by_name(row.get("location"))
         connection_identifier = (row.get("connection_identifier") or "").strip().upper()
-        if connection_identifier not in connection_identifier_choices:
+        valid_identifiers = {choice[0] for choice in connection_identifier_choices}
+        if connection_identifier not in valid_identifiers:
             raise RuntimeError(
                 f"Row {row_number}: Invalid connection identifier '{connection_identifier}'. Must be A-Z."
             )
@@ -920,8 +921,9 @@ class CreateExhibitorConnectionSplitBulk(CreateExhibitorConnectionSplit):
         switch_interface = self._get_interface(switch_device, row.get("switch_interface"), "switch_interface")
 
         speed = self._parse_int(row.get("speed_kbps"), "speed_kbps")
-        if speed not in speed_choices:
-            raise RuntimeError(f"Row {row_number}: Speed '{speed}' not in allowed values {sorted(speed_choices)}")
+        valid_speeds = {choice[0] for choice in speed_choices}
+        if speed not in valid_speeds:
+            raise RuntimeError(f"Row {row_number}: Speed '{speed}' not in allowed values {sorted(valid_speeds)}")
 
         connection_type = (row.get("connection_type") or "").strip()
         valid_connection_types = {"Exhibitor", "NRE"}
