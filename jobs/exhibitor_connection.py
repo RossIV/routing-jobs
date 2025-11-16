@@ -635,7 +635,7 @@ class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
     def _get_vlan(self, vlan_id):
         """Validate VLAN existence."""
         self.logger.debug(f"Looking up VLAN ID {vlan_id}")
-        vlan = VLAN.objects.filter(vid=vlan_id).first()
+        vlan = VLAN.objects.filter(vid=vlan_id, vlan_group__name=constants.VLAN_GROUP_NAME).first()
         if not vlan:
             raise RuntimeError(f"VLAN with ID {vlan_id} does not exist in Nautobot")
         return vlan
