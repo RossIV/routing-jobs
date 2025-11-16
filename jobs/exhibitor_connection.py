@@ -370,6 +370,43 @@ class CreateExhibitorConnection(Job):
         except Exception as e:
             self.logger.warning(f"Could not relate prefix to circuit: {str(e)}")
 
+    def _get_or_create_manual_prefix(self, prefix_input, expected_version, circuit, location, target_vrf):
+        """Create a prefix object from user-provided input."""
+        self.logger.debug(
+            f"Processing manual IPv{expected_version} prefix input '{prefix_input}' for circuit {hl(circuit)}"
+        )
+        cleaned_input = (prefix_input or "").strip()
+        if not cleaned_input:
+            return None
+
+        try:
+            network = ip_network(cleaned_input, strict=True)
+        except ValueError as exc:
+            raise RuntimeError(f"Invalid IPv{expected_version} prefix '{cleaned_input}': {exc}")
+
+        if network.version != expected_version:
+            raise RuntimeError(f"Provided prefix '{cleaned_input}' is IPv{network.version}, expected IPv{expected_version}")
+
+        canonical_prefix = str(network)
+        if Prefix.objects.filter(prefix=canonical_prefix).exists():
+            raise RuntimeError(f"Prefix {canonical_prefix} already exists in Nautobot")
+
+        prefix = Prefix(
+            type="network",
+            prefix=canonical_prefix,
+            ip_version=network.version,
+            status=self.active_status,
+            role=self.exhibitor_connection_role,
+            description=circuit.cid,
+            tenant=location.tenant,
+            namespace=self.global_namespace,
+        )
+        prefix.save()
+        prefix.vrfs.set([target_vrf])
+        self._relate_prefix_to_circuit(circuit, prefix)
+        self.logger.info(f"➕ Created manual prefix {hl(prefix)}")
+        return prefix
+
     def _create_ip_address_from_prefix(self, prefix, circuit_name, location):
         """Create an IP address from the prefix (first host or ::1 for IPv6)."""
         self.logger.debug(f"Creating IP address from prefix {hl(prefix)} for circuit '{circuit_name}'")
@@ -486,6 +523,148 @@ class CreateExhibitorConnection(Job):
         """)
 
 
+class CreateExhibitorConnectionAdvanced(CreateExhibitorConnection):
+    """
+    Create an exhibitor connection with manually specified IPv4 and/or IPv6 subnets.
+    Similar to CreateExhibitorConnection but allows manual prefix specification instead of automatic allocation.
+    """
+
+    # Disable base job inputs that aren't used in this advanced workflow
+    ipv4_enabled = None
+    ipv6_enabled = None
+    subnet_size_ipv4 = None
+
+    location = ObjectVar(
+        description="Location (Booth) for the connection",
+        required=True,
+        model=Location,
+        display_field="name",
+        query_params={
+            "tenant__isnull": False,
+        },
+    )
+
+    connection_identifier = ChoiceVar(
+        choices=connection_identifier_choices,
+        required=True,
+    )
+
+    ipv4_prefix_input = StringVar(
+        description="IPv4 prefix to assign (e.g., 192.0.2.0/30)",
+        required=False,
+    )
+
+    ipv6_prefix_input = StringVar(
+        description="IPv6 prefix to assign (e.g., 2001:db8::/64)",
+        required=False,
+    )
+
+    device = ObjectVar(
+        description="Device to connect to",
+        required=True,
+        model=Device,
+        display_field="name",
+        query_params={
+            "role": ["DNOC Switch", "NOC Router", "SCN Router"]
+        },
+    )
+
+    interface = ObjectVar(
+        description="Interface on the selected device to connect to the exhibitor equipment",
+        required=True,
+        model=Interface,
+        display_field="name",
+        query_params={
+            "device_id": "$device",
+        },
+    )
+
+    speed = ChoiceVar(
+        choices=speed_choices,
+        description="Connection speed",
+        required=True,
+    )
+
+    connection_type = ChoiceVar(
+        choices=[
+            ("Exhibitor", "Exhibitor"),
+            ("NRE", "NRE"),
+        ],
+        description="Connection type",
+        required=True,
+    )
+
+    firewalled = BooleanVar(
+        description="Firewalled connection",
+        required=True,
+        default=True,
+    )
+
+    class Meta:
+        name = "Create Exhibitor Connection (Advanced)"
+        description = "Create an exhibitor connection with manually specified IPv4 and/or IPv6 subnets"
+        has_sensitive_variables = False
+
+    @transaction.atomic
+    def run(self, location, connection_identifier, ipv4_prefix_input, ipv6_prefix_input,
+            device, interface, speed, connection_type, firewalled):
+        """Main execution method for advanced connection with manual prefixes."""
+        self.logger.info(f"🚀 Starting advanced exhibitor connection creation for location: {hl(location)}")
+
+        if not (ipv4_prefix_input or ipv6_prefix_input):
+            raise RuntimeError("You must provide at least one IPv4 or IPv6 prefix")
+
+        target_vrf = self._get_target_vrf(connection_type, firewalled)
+
+        # Step 1: Create circuit
+        circuit = self._create_circuit(location, device, connection_identifier, speed)
+        
+        # Step 2: Create prefixes from manual inputs
+        prefixes = []
+        if ipv4_prefix_input:
+            prefix_ipv4 = self._get_or_create_manual_prefix(ipv4_prefix_input, 4, circuit, location, target_vrf)
+            if prefix_ipv4:
+                prefixes.append(prefix_ipv4)
+        
+        if ipv6_prefix_input:
+            prefix_ipv6 = self._get_or_create_manual_prefix(ipv6_prefix_input, 6, circuit, location, target_vrf)
+            if prefix_ipv6:
+                prefixes.append(prefix_ipv6)
+
+        if not prefixes:
+            raise RuntimeError("No prefixes were created; cannot continue")
+
+        # Step 3: Create IP addresses
+        ip_addresses = []
+        for prefix in prefixes:
+            ip_addr = self._create_ip_address_from_prefix(prefix, circuit.cid, location)
+            ip_addresses.append(ip_addr)
+
+        # Step 4: Configure interface
+        if interface.device_id != device.id:
+            raise RuntimeError(f"Selected interface {hl(interface)} does not belong to device {hl(device)}")
+
+        prefix_vrf = None
+        if prefixes:
+            prefix_vrf = prefixes[0].vrfs.first()
+            if not prefix_vrf:
+                self.logger.warning(f"No VRF associated with prefix {hl(prefixes[0])}; interface VRF will be left unset")
+
+        configured_interface = self._configure_interface(interface, ip_addresses, circuit.cid, location, prefix_vrf)
+
+        # Summary
+        self.logger.info(f"""
+        ✅ Advanced exhibitor connection creation completed:
+        
+        Circuit: {hl(circuit)}
+        Location: {hl(location)}
+        Prefixes: {[hl(p) for p in prefixes]}
+        IP Addresses: {[hl(ip) for ip in ip_addresses]}
+        Device: {hl(device)}
+        Interface: {hl(configured_interface)}
+        """)
+
+
 class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
     """
     Create an exhibitor connection where routing and switching functions live on separate devices.
@@ -593,43 +772,6 @@ class CreateExhibitorConnectionSplit(CreateExhibitorConnection):
         name = "Create Exhibitor Connection (Split Route/Switch)"
         description = "Create an exhibitor connection where routing and switching functions live on separate devices."
         has_sensitive_variables = False
-
-    def _get_or_create_manual_prefix(self, prefix_input, expected_version, circuit, location, target_vrf):
-        """Create a prefix object from user-provided input."""
-        self.logger.debug(
-            f"Processing manual IPv{expected_version} prefix input '{prefix_input}' for circuit {hl(circuit)}"
-        )
-        cleaned_input = (prefix_input or "").strip()
-        if not cleaned_input:
-            return None
-
-        try:
-            network = ip_network(cleaned_input, strict=True)
-        except ValueError as exc:
-            raise RuntimeError(f"Invalid IPv{expected_version} prefix '{cleaned_input}': {exc}")
-
-        if network.version != expected_version:
-            raise RuntimeError(f"Provided prefix '{cleaned_input}' is IPv{network.version}, expected IPv{expected_version}")
-
-        canonical_prefix = str(network)
-        if Prefix.objects.filter(prefix=canonical_prefix).exists():
-            raise RuntimeError(f"Prefix {canonical_prefix} already exists in Nautobot")
-
-        prefix = Prefix(
-            type="network",
-            prefix=canonical_prefix,
-            ip_version=network.version,
-            status=self.active_status,
-            role=self.exhibitor_connection_role,
-            description=circuit.cid,
-            tenant=location.tenant,
-            namespace=self.global_namespace,
-        )
-        prefix.save()
-        prefix.vrfs.set([target_vrf])
-        self._relate_prefix_to_circuit(circuit, prefix)
-        self.logger.info(f"➕ Created manual prefix {hl(prefix)}")
-        return prefix
 
     def _get_vlan(self, vlan_id):
         """Validate VLAN existence."""
